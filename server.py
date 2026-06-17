@@ -28,8 +28,8 @@ from metrics import extract_month_metrics, flag_month_over_month_changes
 
 app = FastAPI(title="RSLLC Brokerage Reviewer")
 
-ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "changeme")
+ADMIN_USER = os.environ.get("ADMIN_USER", "RegimentSecurities")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "Regiment123")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", ADMIN_PASS)
 SESSION_COOKIE = "rsllc_brokerage_session"
 

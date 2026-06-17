@@ -1,10 +1,14 @@
-#git clone https://github.com/nc4597/Regiment-Securities.git
-#cd Regiment-Securities
-#python3 -m venv venv
-#venv/bin/pip install -r requirements.txt
-#
-#IPO_Calendar_Tracking_Sheet.csv
-#restricted_list_prior_month.csv
+git clone https://github.com/nc4597/Regiment-Securities.git
+cd Regiment-Securities
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
 
-#(or whichever csv files you have, the code here does not give access to the private information so for security reasons when you download make sure to add this in the terminal or whereever)
-#run ./start_server.sh then past http://127.0.0.1:8001 into url
+IPO_Calendar_Tracking_Sheet.csv
+restricted_list_prior_month.csv
+
+(or whichever csv files you have, the code here does not give access to the private information so for security reasons when you download make sure to add this in the terminal or whereever)
+run ./start_server.sh then past http://127.0.0.1:8001 into url
+
+default login:
+username is RegimentSecurities
+password is Regiment123

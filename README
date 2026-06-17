@@ -1,4 +1,4 @@
-git clone https://github.com/nc4597/Regiment-Securities.git
+git clone https://github.com/KJRSLLC/AI-Brokerage-Statement.git
 cd Regiment-Securities
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt

@@ -211,9 +211,6 @@ def dataframe_to_excel_bytes(df: pd.DataFrame):
         body_font = Font(name="Times New Roman", size=16)
         thin_gray = Side(style="thin", color="D1D5DB")
         border = Border(left=thin_gray, right=thin_gray, top=thin_gray, bottom=thin_gray)
-        clean_fill = PatternFill("solid", fgColor="A7B56D")
-        comparison_fill = PatternFill("solid", fgColor="F4B183")
-        multi_comparison_fill = PatternFill("solid", fgColor="C98E8E")
 
         for row in worksheet.iter_rows():
             for cell in row:
@@ -232,11 +229,6 @@ def dataframe_to_excel_bytes(df: pd.DataFrame):
                 vertical="center",
                 wrap_text=True,
             )
-
-        for row_index in range(2, worksheet.max_row + 1):
-            fill_color = "F9FAFB" if row_index % 2 == 0 else "FFFFFF"
-            for cell in worksheet[row_index]:
-                cell.fill = PatternFill("solid", fgColor=fill_color)
 
         preferred_widths = {
             "Name": 34,
@@ -278,41 +270,5 @@ def dataframe_to_excel_bytes(df: pd.DataFrame):
                 showColumnStripes=False,
             )
             worksheet.add_table(table)
-
-        headers = {
-            str(cell.value or ""): cell.column
-            for cell in worksheet[1]
-        }
-        current_scan_col = headers.get("Current-Month Scan")
-        comparison_col = headers.get("Prior Month vs Current Month Comparison")
-
-        def is_none_value(value):
-            return str(value or "").strip().lower() == "none"
-
-        def flag_line_count(value):
-            lines = [
-                line.strip()
-                for line in str(value or "").splitlines()
-                if line.strip() and line.strip().lower() != "none"
-            ]
-            return len(lines)
-
-        if current_scan_col and comparison_col:
-            for row_index in range(2, worksheet.max_row + 1):
-                current_value = worksheet.cell(row_index, current_scan_col).value
-                comparison_value = worksheet.cell(row_index, comparison_col).value
-                comparison_flag_count = flag_line_count(comparison_value)
-
-                row_fill = None
-                if is_none_value(current_value) and is_none_value(comparison_value):
-                    row_fill = clean_fill
-                elif comparison_flag_count > 1:
-                    row_fill = multi_comparison_fill
-                elif comparison_flag_count == 1:
-                    row_fill = comparison_fill
-
-                if row_fill:
-                    for cell in worksheet[row_index]:
-                        cell.fill = row_fill
 
     return output.getvalue()

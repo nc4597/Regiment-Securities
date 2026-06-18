@@ -28,10 +28,26 @@ from metrics import extract_month_metrics, flag_month_over_month_changes
 
 app = FastAPI(title="RSLLC Brokerage Reviewer")
 
-ADMIN_USER = os.environ.get("ADMIN_USER", "RegimentSecurities")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "Regiment123")
+ADMIN_USER = os.environ.get("ADMIN_USER", "").strip()
+AUTHORIZED_USERS = {
+    user.strip()
+    for user in os.environ.get("AUTHORIZED_USERS", ADMIN_USER).split(",")
+    if user.strip()
+}
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", ADMIN_PASS)
 SESSION_COOKIE = "rsllc_brokerage_session"
+
+
+def auth_is_configured() -> bool:
+    return bool(AUTHORIZED_USERS and ADMIN_PASS and SESSION_SECRET)
+
+
+def username_is_authorized(username: str) -> bool:
+    return any(
+        secrets.compare_digest(username, authorized_user)
+        for authorized_user in AUTHORIZED_USERS
+    )
 
 
 def create_session_token(username: str) -> str:
@@ -60,7 +76,7 @@ def verify_session_token(token: str) -> Optional[str]:
     if not secrets.compare_digest(signature, expected):
         return None
 
-    if not secrets.compare_digest(username, ADMIN_USER):
+    if not username_is_authorized(username):
         return None
 
     return username
@@ -74,6 +90,9 @@ def require_login(request: Request):
 
 
 def login_page(error: str = "") -> str:
+    if not auth_is_configured() and not error:
+        error = "Login is not configured. Set company credentials in the server environment."
+
     error_html = f'<div class="error">{error}</div>' if error else ""
     return f"""
     <html>
@@ -87,16 +106,16 @@ def login_page(error: str = "") -> str:
                     margin: 0;
                     min-height: 100vh;
                     font-family: Arial, sans-serif;
-                    background: #070708;
-                    color: #f5f5f5;
+                    background: #ffffff;
+                    color: #050505;
                 }}
                 .topbar {{
                     height: 78px;
                     display: flex;
                     align-items: center;
                     padding: 0 30px;
-                    background: #050505;
-                    border-bottom: 2px solid #d71920;
+                    background: #ffffff;
+                    border-bottom: 2px solid #050505;
                 }}
                 .brand {{
                     display: flex;
@@ -109,8 +128,8 @@ def login_page(error: str = "") -> str:
                     width: 44px;
                     height: 44px;
                     border-radius: 6px;
-                    background: #ffffff;
-                    color: #d71920;
+                    background: #050505;
+                    color: #ffffff;
                     display: grid;
                     place-items: center;
                     font-size: 26px;
@@ -131,7 +150,8 @@ def login_page(error: str = "") -> str:
                     height: 64px;
                     margin: 0 auto 24px;
                     border-radius: 50%;
-                    background: #d71920;
+                    background: #050505;
+                    color: #ffffff;
                     display: grid;
                     place-items: center;
                     font-size: 34px;
@@ -143,7 +163,7 @@ def login_page(error: str = "") -> str:
                 }}
                 .subtitle {{
                     margin: 12px 0 34px;
-                    color: #a7a7ad;
+                    color: #555555;
                     font-size: 18px;
                 }}
                 form {{
@@ -152,7 +172,7 @@ def login_page(error: str = "") -> str:
                 label {{
                     display: block;
                     margin: 18px 0 8px;
-                    color: #d8d8dc;
+                    color: #050505;
                     font-size: 17px;
                     font-weight: 700;
                 }}
@@ -160,16 +180,16 @@ def login_page(error: str = "") -> str:
                     width: 100%;
                     height: 58px;
                     border-radius: 8px;
-                    border: 1px solid #3a3a44;
-                    background: #17171b;
-                    color: #ffffff;
+                    border: 1px solid #9a9a9a;
+                    background: #ffffff;
+                    color: #050505;
                     padding: 0 18px;
                     font-size: 18px;
                     outline: none;
                 }}
                 input:focus {{
-                    border-color: #d71920;
-                    box-shadow: 0 0 0 3px rgba(215, 25, 32, 0.22);
+                    border-color: #050505;
+                    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.12);
                 }}
                 button {{
                     width: 100%;
@@ -177,22 +197,22 @@ def login_page(error: str = "") -> str:
                     margin-top: 24px;
                     border: 0;
                     border-radius: 8px;
-                    background: #d71920;
+                    background: #050505;
                     color: #ffffff;
                     font-size: 18px;
                     font-weight: 800;
                     cursor: pointer;
                 }}
                 button:hover {{
-                    background: #b9151b;
+                    background: #303030;
                 }}
                 .error {{
                     margin-bottom: 18px;
                     padding: 12px 14px;
                     border-radius: 8px;
-                    background: rgba(215, 25, 32, 0.16);
-                    border: 1px solid rgba(215, 25, 32, 0.55);
-                    color: #ffb6ba;
+                    background: #f2f2f2;
+                    border: 1px solid #050505;
+                    color: #050505;
                     text-align: center;
                     font-weight: 700;
                 }}
@@ -209,7 +229,7 @@ def login_page(error: str = "") -> str:
                 <section class="login">
                     <div class="lock">&#128274;</div>
                     <h1>RSLLC Brokerage Reviewer</h1>
-                    <p class="subtitle">Sign in to review brokerage statements</p>
+                    <p class="subtitle">Sign in with company-authorized credentials</p>
                     {error_html}
                     <form action="/login" method="post">
                         <label>Username</label>
@@ -239,7 +259,15 @@ def login_post(
     username: str = Form(""),
     password: str = Form(""),
 ):
-    correct_username = secrets.compare_digest(username, ADMIN_USER)
+    username = username.strip()
+
+    if not auth_is_configured():
+        return HTMLResponse(
+            login_page("Login is not configured. Set company credentials in the server environment."),
+            status_code=503,
+        )
+
+    correct_username = username_is_authorized(username)
     correct_password = secrets.compare_digest(password, ADMIN_PASS)
 
     if not (correct_username and correct_password):
@@ -279,8 +307,8 @@ def index(request: Request):
                     font-family: Arial, sans-serif;
                     margin: 0;
                     min-height: 100vh;
-                    background: #080809;
-                    color: #f5f5f5;
+                    background: #ffffff;
+                    color: #050505;
                 }
                 .topbar {
                     height: 78px;
@@ -288,8 +316,8 @@ def index(request: Request):
                     justify-content: space-between;
                     align-items: center;
                     padding: 0 30px;
-                    background: #050505;
-                    border-bottom: 2px solid #d71920;
+                    background: #ffffff;
+                    border-bottom: 2px solid #050505;
                 }
                 .brand {
                     display: flex;
@@ -302,21 +330,21 @@ def index(request: Request):
                     width: 44px;
                     height: 44px;
                     border-radius: 6px;
-                    background: #ffffff;
-                    color: #d71920;
+                    background: #050505;
+                    color: #ffffff;
                     display: grid;
                     place-items: center;
                     font-size: 26px;
                     font-weight: 900;
                 }
                 .nav a {
-                    color: #c8c8ce;
+                    color: #050505;
                     text-decoration: none;
                     font-weight: 700;
                     margin-left: 22px;
                 }
                 .nav a:hover {
-                    color: #ffffff;
+                    color: #4a4a4a;
                 }
                 main {
                     max-width: 980px;
@@ -325,17 +353,17 @@ def index(request: Request):
                 }
                 h1 {
                     margin: 0 0 10px;
-                    color: #ffffff;
+                    color: #050505;
                     font-size: 36px;
                 }
                 .intro {
                     margin: 0 0 28px;
-                    color: #a7a7ad;
+                    color: #555555;
                     font-size: 17px;
                 }
                 .box {
-                    border: 1px solid #2a2a32;
-                    background: #111115;
+                    border: 1px solid #cfcfcf;
+                    background: #ffffff;
                     padding: 28px;
                     border-radius: 12px;
                     margin-bottom: 20px;
@@ -345,7 +373,7 @@ def index(request: Request):
                     display: block;
                     margin-top: 18px;
                     font-weight: bold;
-                    color: #ececf0;
+                    color: #050505;
                 }
                 input {
                     margin-top: 6px;
@@ -354,9 +382,9 @@ def index(request: Request):
                     min-height: 46px;
                     box-sizing: border-box;
                     border-radius: 8px;
-                    border: 1px solid #3a3a44;
-                    background: #18181d;
-                    color: #ffffff;
+                    border: 1px solid #9a9a9a;
+                    background: #ffffff;
+                    color: #050505;
                     font-size: 15px;
                 }
                 .slider-row {
@@ -374,12 +402,12 @@ def index(request: Request):
                     min-width: 56px;
                     text-align: right;
                     font-weight: bold;
-                    color: #ffffff;
+                    color: #050505;
                 }
                 button {
                     margin-top: 26px;
-                    background: #d71920;
-                    color: white;
+                    background: #050505;
+                    color: #ffffff;
                     border: none;
                     padding: 14px 20px;
                     border-radius: 8px;
@@ -388,14 +416,14 @@ def index(request: Request):
                     font-size: 16px;
                 }
                 button:hover {
-                    background: #b9151b;
+                    background: #303030;
                 }
                 .note {
-                    color: #a7a7ad;
+                    color: #555555;
                     font-size: 14px;
                 }
                 a {
-                    color: #ff7a80;
+                    color: #050505;
                 }
             </style>
         </head>

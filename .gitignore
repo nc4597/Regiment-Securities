@@ -14,10 +14,6 @@ outputs/
 *.log
 *.pid
 
-# Local confidential data files used by the app.
-IPO_Calendar_Tracking_Sheet.csv
-restricted_list_prior_month.csv
-
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

@@ -675,6 +675,10 @@ def _download_sharefile_folder_items(
         if _is_sharefile_folder(full_child_metadata):
             subdir = target_dir / child_name
             subdir.mkdir(parents=True, exist_ok=True)
+            if depth == 0 and progress_callback:
+                # Top-level children of the root are individual rep folders --
+                # name the rep currently being scanned, not just depth/count.
+                progress_callback(f"Scanning {child_name}.")
             _download_sharefile_folder_items(
                 domain,
                 access_token,

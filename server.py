@@ -12,6 +12,7 @@ import html
 import re
 import shutil
 import threading
+import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -1073,10 +1074,13 @@ def start_sharefile_review_job(
     prior_month_override: str = "",
 ) -> str:
     job_id = uuid.uuid4().hex
+    started_at = time.time()
     SHAREFILE_REVIEW_JOBS[job_id] = {
         "status": "running",
         "message": "ShareFile review is queued.",
         "file_path": "",
+        "started_at": started_at,
+        "diagnostics": {},
     }
 
     def update_progress(message: str) -> None:
@@ -1110,21 +1114,134 @@ def start_sharefile_review_job(
             outputs_dir.mkdir(exist_ok=True)
             file_path = outputs_dir / f"sharefile_review_{job_id}.xlsx"
             file_path.write_bytes(excel_bytes)
+
+            diagnostics = {}
+            try:
+                from openpyxl import load_workbook
+                workbook = load_workbook(io.BytesIO(excel_bytes), data_only=True)
+                if "Diagnostics" in workbook.sheetnames:
+                    rows = workbook["Diagnostics"].iter_rows(min_row=2, values_only=True)
+                    diagnostics = {str(k): v for k, v in rows if k is not None}
+            except Exception:
+                diagnostics = {}
+
             SHAREFILE_REVIEW_JOBS[job_id].update({
                 "status": "complete",
                 "message": "ShareFile review complete.",
                 "file_path": str(file_path),
+                "diagnostics": diagnostics,
+                "duration_seconds": time.time() - started_at,
             })
         except Exception as exc:
             SHAREFILE_REVIEW_JOBS[job_id].update({
                 "status": "failed",
                 "message": str(exc),
+                "duration_seconds": time.time() - started_at,
                 "file_path": "",
             })
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     return job_id
+
+
+def _design_system_css() -> str:
+    return """
+        :root {
+            --ground: #ffffff;
+            --ink: #0b0b0c;
+            --rule: #e3e3e1;
+            --muted: #6b6e76;
+            --success: #1f7a4d;
+            --success-bg: #eef6f1;
+            --pending: #a8710a;
+            --pending-bg: #faf3e6;
+            --critical: #b23a2e;
+            --critical-bg: #fbeeec;
+            --display: ui-serif, Georgia, "Times New Roman", serif;
+            --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --mono: ui-monospace, "SF Mono", "Menlo", "Cascadia Mono", monospace;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--ui); -webkit-font-smoothing: antialiased; }
+        a { color: inherit; }
+        a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+        .topbar { display: flex; align-items: center; gap: 14px; height: 72px; padding: 0 28px; border-bottom: 2px solid var(--ink); }
+        .logo { width: 38px; height: 38px; border-radius: 6px; background: var(--ink); color: var(--ground); display: grid; place-items: center; font-family: var(--display); font-weight: 700; font-size: 20px; }
+        .brand { font-family: var(--ui); font-weight: 700; font-size: 15px; letter-spacing: 0.01em; }
+        main { max-width: 720px; margin: 0 auto; padding: 56px 28px 96px; }
+        .card { border: 1px solid var(--rule); border-radius: 12px; background: var(--ground); box-shadow: 0 18px 44px rgba(11, 11, 12, 0.08); overflow: hidden; }
+        .card-rule { height: 3px; }
+        .card-rule.running { background: var(--pending); }
+        .card-rule.complete { background: var(--success); }
+        .card-rule.failed { background: var(--critical); }
+        .card-body { padding: 32px 36px 36px; display: flex; flex-direction: column; gap: 18px; }
+        .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+        .card-title { font-family: var(--display); font-weight: 500; font-size: 22px; margin: 0; text-wrap: balance; }
+        .card-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+        .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 100px; font-family: var(--ui); font-size: 12px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; flex-shrink: 0; }
+        .pill.running { background: var(--pending-bg); color: var(--pending); }
+        .pill.complete { background: var(--success-bg); color: var(--success); }
+        .pill.failed { background: var(--critical-bg); color: var(--critical); }
+        .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+        .pill.running .dot { animation: pulse 1.6s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .pill.running .dot { animation: none; } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+        .progress-track { height: 6px; border-radius: 100px; background: var(--pending-bg); overflow: hidden; }
+        .progress-fill { height: 100%; width: 42%; border-radius: 100px; background: var(--pending); animation: sweep 2.2s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .progress-fill { animation: none; } }
+        @keyframes sweep { 0% { transform: translateX(-40%); } 50% { transform: translateX(120%); } 100% { transform: translateX(-40%); } }
+        .status-line { font-size: 14.5px; line-height: 1.6; color: var(--ink); margin: 0; }
+        .status-line.muted { color: var(--muted); }
+        .stat-row { display: flex; gap: 28px; flex-wrap: wrap; row-gap: 16px; padding-top: 18px; border-top: 1px solid var(--rule); margin-top: 4px; }
+        .stat { display: flex; flex-direction: column; gap: 3px; }
+        .stat-label { font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+        .stat-value { font-family: var(--mono); font-size: 15px; font-variant-numeric: tabular-nums; }
+        .error-box { background: var(--critical-bg); border: 1px solid #eecbc6; border-radius: 8px; padding: 14px 16px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: #7a2c22; white-space: pre-wrap; word-break: break-word; }
+        .actions { display: flex; gap: 12px; padding-top: 6px; flex-wrap: wrap; }
+        .btn { display: inline-flex; align-items: center; gap: 8px; font-family: var(--ui); font-size: 14px; font-weight: 600; padding: 11px 18px; border-radius: 8px; text-decoration: none; border: 1px solid transparent; cursor: pointer; }
+        .btn-primary { background: var(--ink); color: var(--ground); }
+        .btn-primary:hover { background: #262628; }
+        .btn-secondary { background: transparent; color: var(--ink); border-color: var(--rule); }
+        .btn-secondary:hover { border-color: var(--ink); }
+        form { max-width: 640px; }
+        .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+        .field label { font-size: 12px; font-weight: 700; color: var(--ink); }
+        .field input, .field textarea { font-family: var(--mono); font-size: 13px; padding: 10px 12px; border-radius: 7px; border: 1px solid var(--rule); background: #fbfbfa; color: var(--ink); width: 100%; }
+        .field input::placeholder, .field textarea::placeholder { color: #a8aaad; font-family: var(--ui); }
+        .field input:focus, .field textarea:focus { outline: 2px solid var(--ink); outline-offset: 1px; border-color: var(--ink); }
+        .field-hint { font-size: 11.5px; color: var(--muted); font-family: var(--ui); }
+        .slider-row { display: flex; align-items: center; gap: 12px; }
+        .slider-row input[type="range"] { flex: 1; accent-color: var(--ink); }
+        .slider-value { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; min-width: 42px; text-align: right; }
+        h2.section-title { font-family: var(--display); font-weight: 500; font-size: 18px; margin: 40px 0 20px; }
+        h2.section-title:first-of-type { margin-top: 0; }
+        @media (max-width: 640px) {
+            main { padding: 40px 20px 72px; }
+            .card-body { padding: 24px 22px 28px; }
+            .card-head { flex-direction: column; }
+        }
+    """
+
+
+def _design_system_topbar() -> str:
+    return (
+        '<div class="topbar">'
+        '<div class="logo">R</div>'
+        '<div class="brand">RSLLC Brokerage Reviewer</div>'
+        "</div>"
+    )
+
+
+def _format_duration(seconds) -> str:
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return "—"
+    minutes, secs = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 @app.get("/sharefile/jobs/{job_id}")
@@ -1135,24 +1252,81 @@ def sharefile_job_status(job_id: str):
 
     escaped_message = html.escape(job.get("message", ""))
     status = job.get("status", "unknown")
+    diagnostics = job.get("diagnostics") or {}
+    refresh_script = "<script>setTimeout(() => location.reload(), 8000);</script>"
+
     if status == "complete":
-        body = (
-            f"<h1>ShareFile review complete</h1>"
-            f"<p>{escaped_message}</p>"
-            f'<p><a href="/sharefile/jobs/{job_id}/download">Download Excel workbook</a></p>'
+        duration = _format_duration(job.get("duration_seconds"))
+        stats = [
+            ("Downloaded", diagnostics.get("Files downloaded", "—")),
+            ("Skipped (out of window)", diagnostics.get("Files skipped by filename pre-filter", "—")),
+            ("Rule flags", diagnostics.get("Rule flag rows", "—")),
+            ("Runtime", duration),
+        ]
+        stat_html = "".join(
+            f'<div class="stat"><span class="stat-label">{html.escape(label)}</span>'
+            f'<span class="stat-value">{html.escape(str(value))}</span></div>'
+            for label, value in stats
         )
+        card = f"""
+            <div class="card">
+                <div class="card-rule complete"></div>
+                <div class="card-body">
+                    <div class="card-head">
+                        <div>
+                            <h1 class="card-title">Review complete</h1>
+                            <p class="card-meta">job {html.escape(job_id)}</p>
+                        </div>
+                        <span class="pill complete"><span class="dot"></span>Complete</span>
+                    </div>
+                    <p class="status-line">{escaped_message}</p>
+                    <div class="stat-row">{stat_html}</div>
+                    <div class="actions">
+                        <a class="btn btn-primary" href="/sharefile/jobs/{job_id}/download">Download Excel workbook</a>
+                    </div>
+                </div>
+            </div>
+        """
+        refresh_script = ""
     elif status == "failed":
-        body = f"<h1>ShareFile review failed</h1><pre>{escaped_message}</pre>"
+        duration = _format_duration(job.get("duration_seconds"))
+        card = f"""
+            <div class="card">
+                <div class="card-rule failed"></div>
+                <div class="card-body">
+                    <div class="card-head">
+                        <div>
+                            <h1 class="card-title">Review failed</h1>
+                            <p class="card-meta">job {html.escape(job_id)} &middot; ran {duration}</p>
+                        </div>
+                        <span class="pill failed"><span class="dot"></span>Failed</span>
+                    </div>
+                    <div class="error-box">{escaped_message}</div>
+                </div>
+            </div>
+        """
+        refresh_script = ""
     else:
-        body = (
-            "<h1>ShareFile review running</h1>"
-            f"<p>{escaped_message}</p>"
-            "<p>Refresh this page in a minute.</p>"
-            "<script>setTimeout(() => location.reload(), 60000);</script>"
-        )
+        card = f"""
+            <div class="card">
+                <div class="card-rule running"></div>
+                <div class="card-body">
+                    <div class="card-head">
+                        <div>
+                            <h1 class="card-title">Running ShareFile review</h1>
+                            <p class="card-meta">job {html.escape(job_id)}</p>
+                        </div>
+                        <span class="pill running"><span class="dot"></span>Running</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill"></div></div>
+                    <p class="status-line muted">{escaped_message}</p>
+                </div>
+            </div>
+        """
 
     return HTMLResponse(
-        f"<html><body>{body}</body></html>",
+        f"""<html><head><title>ShareFile Review</title><style>{_design_system_css()}</style></head>
+        <body>{_design_system_topbar()}<main>{card}</main>{refresh_script}</body></html>""",
         status_code=200,
     )
 
@@ -1672,129 +1846,148 @@ def run_sharefile_review_form(request: Request):
         <html>
             <head>
                 <title>Run ShareFile LLM Review</title>
-                <style>
-                    body { font-family: Arial, sans-serif; padding: 24px; background: #f7f7f7; }
-                    form { max-width: 720px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 0 24px rgba(0,0,0,0.08); }
-                    label { display: block; margin-top: 16px; font-weight: 700; }
-                    input, button, textarea { width: 100%; padding: 10px 14px; margin-top: 8px; border-radius: 8px; border: 1px solid #ccc; font-family: inherit; }
-                    button { background: #2d7ff9; color: white; border: none; cursor: pointer; }
-                    button:hover { background: #1d5cd5; }
-                    .slider-row { display: flex; gap: 14px; align-items: center; margin-top: 8px; }
-                    .slider-row input { flex: 1; margin-top: 0; padding: 0; }
-                    .slider-value { min-width: 56px; text-align: right; font-weight: 700; }
-                </style>
+                <style>__CSS__</style>
             </head>
             <body>
-                <h1>Run ShareFile LLM Review</h1>
+                __TOPBAR__
+                <main>
+                <h2 class="section-title">Browser OAuth Login</h2>
                 <form action="/sharefile/oauth/start" method="post">
-                    <h2>Browser OAuth Login</h2>
-                    <label>ShareFile domain</label>
-                    <input type="text" name="sharefile_domain" placeholder="regiment339.sharefile.com" required>
-
-                    <label>ShareFile client ID</label>
-                    <input type="text" name="sharefile_client_id" required>
-
-                    <label>ShareFile client secret</label>
-                    <input type="password" name="sharefile_client_secret" required>
-
-                    <label>Public HTTPS callback URL</label>
-                    <input type="url" name="sharefile_redirect_uri" value="__CALLBACK_URL__" required>
-
-                    <label>ShareFile brokerage statements root folder URL or item ID</label>
-                    <textarea name="sharefile_root_item_id" rows="3" placeholder="Outside brokerage statements folder URL (whole tree), or one specific rep folder URL per line to target only a few reps" required></textarea>
-
-                    <label>Current month override (optional)</label>
-                    <input type="text" name="current_month_override" placeholder="auto: current calendar month, e.g. 2026-07">
-
-                    <label>Prior month override (optional)</label>
-                    <input type="text" name="prior_month_override" placeholder="auto: prior calendar month, e.g. 2026-06">
-
-                    <label>Excessive Trading Increase Threshold</label>
-                    <div class="slider-row">
-                        <input
-                            type="range"
-                            name="excessive_trading_pct"
-                            min="0"
-                            max="500"
-                            step="5"
-                            value="25"
-                            oninput="document.getElementById('excessive-trading-value-oauth').textContent = this.value + '%'"
-                        >
-                        <span class="slider-value" id="excessive-trading-value-oauth">25%</span>
+                    <div class="field">
+                        <label>ShareFile domain</label>
+                        <input type="text" name="sharefile_domain" placeholder="regiment339.sharefile.com" required>
                     </div>
-
-                    <label>Prompt model</label>
-                    <input type="text" name="model" value="__MODEL__">
-
-                    <label>Max tokens</label>
-                    <input type="number" name="max_tokens" value="512" min="1">
-
-                    <label>Temperature</label>
-                    <input type="number" step="0.1" min="0" max="1" name="temperature" value="0.2">
-
-                    <button type="submit">Connect with ShareFile OAuth</button>
+                    <div class="field">
+                        <label>ShareFile client ID</label>
+                        <input type="text" name="sharefile_client_id" required>
+                    </div>
+                    <div class="field">
+                        <label>ShareFile client secret</label>
+                        <input type="password" name="sharefile_client_secret" required>
+                    </div>
+                    <div class="field">
+                        <label>Public HTTPS callback URL</label>
+                        <input type="url" name="sharefile_redirect_uri" value="__CALLBACK_URL__" required>
+                    </div>
+                    <div class="field">
+                        <label>ShareFile brokerage statements root folder URL or item ID</label>
+                        <textarea name="sharefile_root_item_id" rows="3" placeholder="Outside brokerage statements folder URL (whole tree), or one specific rep folder URL per line to target only a few reps" required></textarea>
+                    </div>
+                    <div class="field">
+                        <label>Current month override (optional)</label>
+                        <input type="text" name="current_month_override" placeholder="auto: current calendar month, e.g. 2026-07">
+                    </div>
+                    <div class="field">
+                        <label>Prior month override (optional)</label>
+                        <input type="text" name="prior_month_override" placeholder="auto: prior calendar month, e.g. 2026-06">
+                    </div>
+                    <div class="field">
+                        <label>Excessive Trading Increase Threshold</label>
+                        <div class="slider-row">
+                            <input
+                                type="range"
+                                name="excessive_trading_pct"
+                                min="0"
+                                max="500"
+                                step="5"
+                                value="25"
+                                oninput="document.getElementById('excessive-trading-value-oauth').textContent = this.value + '%'"
+                            >
+                            <span class="slider-value" id="excessive-trading-value-oauth">25%</span>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>Prompt model</label>
+                        <input type="text" name="model" value="__MODEL__">
+                    </div>
+                    <div class="field">
+                        <label>Max tokens</label>
+                        <input type="number" name="max_tokens" value="512" min="1">
+                    </div>
+                    <div class="field">
+                        <label>Temperature</label>
+                        <input type="number" step="0.1" min="0" max="1" name="temperature" value="0.2">
+                    </div>
+                    <button class="btn btn-primary" type="submit">Connect with ShareFile OAuth</button>
                 </form>
 
+                <h2 class="section-title">Direct Token Login</h2>
                 <form action="/run-sharefile-review" method="post" enctype="multipart/form-data">
-                    <h2>Direct Token Login</h2>
-                    <label>ShareFile domain</label>
-                    <input type="text" name="sharefile_domain" placeholder="example.sharefile.com" required>
-
-                    <label>ShareFile client ID</label>
-                    <input type="text" name="sharefile_client_id" required>
-
-                    <label>ShareFile client secret</label>
-                    <input type="password" name="sharefile_client_secret" required>
-
-                    <label>ShareFile username</label>
-                    <input type="text" name="sharefile_username" autocomplete="username">
-
-                    <label>ShareFile password</label>
-                    <input type="password" name="sharefile_password" autocomplete="current-password">
-
-                    <label>ShareFile brokerage statements root folder URL or item ID</label>
-                    <textarea name="sharefile_root_item_id" rows="3" placeholder="Outside brokerage statements folder URL (whole tree), or one specific rep folder URL per line to target only a few reps" required></textarea>
-
-                    <label>Additional Restricted List CSV</label>
-                    <input type="file" name="restricted_csv" accept=".csv">
-
-                    <label>Additional IPO Calendar CSV</label>
-                    <input type="file" name="ipo_csv" accept=".csv">
-
-                    <label>Current month override (optional)</label>
-                    <input type="text" name="current_month_override" placeholder="auto: current calendar month, e.g. 2026-07">
-
-                    <label>Prior month override (optional)</label>
-                    <input type="text" name="prior_month_override" placeholder="auto: prior calendar month, e.g. 2026-06">
-
-                    <label>Excessive Trading Increase Threshold</label>
-                    <div class="slider-row">
-                        <input
-                            type="range"
-                            name="excessive_trading_pct"
-                            min="0"
-                            max="500"
-                            step="5"
-                            value="25"
-                            oninput="document.getElementById('excessive-trading-value-token').textContent = this.value + '%'"
-                        >
-                        <span class="slider-value" id="excessive-trading-value-token">25%</span>
+                    <div class="field">
+                        <label>ShareFile domain</label>
+                        <input type="text" name="sharefile_domain" placeholder="example.sharefile.com" required>
                     </div>
-
-                    <label>Prompt model</label>
-                    <input type="text" name="model" value="__MODEL__">
-
-                    <label>Max tokens</label>
-                    <input type="number" name="max_tokens" value="512" min="1">
-
-                    <label>Temperature</label>
-                    <input type="number" step="0.1" min="0" max="1" name="temperature" value="0.2">
-
-                    <button type="submit">Run Review</button>
+                    <div class="field">
+                        <label>ShareFile client ID</label>
+                        <input type="text" name="sharefile_client_id" required>
+                    </div>
+                    <div class="field">
+                        <label>ShareFile client secret</label>
+                        <input type="password" name="sharefile_client_secret" required>
+                    </div>
+                    <div class="field">
+                        <label>ShareFile username</label>
+                        <input type="text" name="sharefile_username" autocomplete="username">
+                    </div>
+                    <div class="field">
+                        <label>ShareFile password</label>
+                        <input type="password" name="sharefile_password" autocomplete="current-password">
+                    </div>
+                    <div class="field">
+                        <label>ShareFile brokerage statements root folder URL or item ID</label>
+                        <textarea name="sharefile_root_item_id" rows="3" placeholder="Outside brokerage statements folder URL (whole tree), or one specific rep folder URL per line to target only a few reps" required></textarea>
+                    </div>
+                    <div class="field">
+                        <label>Additional Restricted List CSV</label>
+                        <input type="file" name="restricted_csv" accept=".csv">
+                    </div>
+                    <div class="field">
+                        <label>Additional IPO Calendar CSV</label>
+                        <input type="file" name="ipo_csv" accept=".csv">
+                    </div>
+                    <div class="field">
+                        <label>Current month override (optional)</label>
+                        <input type="text" name="current_month_override" placeholder="auto: current calendar month, e.g. 2026-07">
+                    </div>
+                    <div class="field">
+                        <label>Prior month override (optional)</label>
+                        <input type="text" name="prior_month_override" placeholder="auto: prior calendar month, e.g. 2026-06">
+                    </div>
+                    <div class="field">
+                        <label>Excessive Trading Increase Threshold</label>
+                        <div class="slider-row">
+                            <input
+                                type="range"
+                                name="excessive_trading_pct"
+                                min="0"
+                                max="500"
+                                step="5"
+                                value="25"
+                                oninput="document.getElementById('excessive-trading-value-token').textContent = this.value + '%'"
+                            >
+                            <span class="slider-value" id="excessive-trading-value-token">25%</span>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>Prompt model</label>
+                        <input type="text" name="model" value="__MODEL__">
+                    </div>
+                    <div class="field">
+                        <label>Max tokens</label>
+                        <input type="number" name="max_tokens" value="512" min="1">
+                    </div>
+                    <div class="field">
+                        <label>Temperature</label>
+                        <input type="number" step="0.1" min="0" max="1" name="temperature" value="0.2">
+                    </div>
+                    <button class="btn btn-primary" type="submit">Run Review</button>
                 </form>
+                </main>
             </body>
         </html>
         """
+    html_text = html_text.replace("__CSS__", _design_system_css())
+    html_text = html_text.replace("__TOPBAR__", _design_system_topbar())
     html_text = html_text.replace("__CALLBACK_URL__", escaped_callback_url)
     html_text = html_text.replace("__MODEL__", escaped_model)
     return HTMLResponse(

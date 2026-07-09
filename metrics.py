@@ -151,13 +151,37 @@ def calculate_loss_activity(account_text: str):
 
 def extract_month_metrics(month_dir: Path):
     rows = []
-    from utils import clean_rep_name_from_filename
     from utils import iter_pdf_paths
     from utils import move_leading_account_number_from_name
+    from utils import resolve_rep_name_for_pdf
     from pdf_utils import split_pdf_into_accounts
     for pdf_path in iter_pdf_paths(month_dir):
-        rep_name = clean_rep_name_from_filename(pdf_path.name)
-        accounts = split_pdf_into_accounts(pdf_path)
+        rep_name = resolve_rep_name_for_pdf(pdf_path, month_dir)
+        try:
+            accounts = split_pdf_into_accounts(pdf_path)
+        except Exception:
+            accounts = []
+
+        if not accounts:
+            row_name, row_account_number = move_leading_account_number_from_name(
+                rep_name,
+                "Unknown",
+            )
+            rows.append({
+                "Name": row_name,
+                "PDF File": pdf_path.name,
+                "Account Number": row_account_number,
+                "Cash Expenditures": 0,
+                "Transfer Amount": 0,
+                "Cash Receipts": 0,
+                "Cash Disbursements": 0,
+                "Money Movement Amount": 0,
+                "Trade Count": 0,
+                "Trade Volume": 0,
+                "Loss Amount": 0,
+            })
+            continue
+
         for account in accounts:
             account_number = account["account_number"]
             row_name, row_account_number = move_leading_account_number_from_name(

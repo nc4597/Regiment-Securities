@@ -1,4 +1,5 @@
 import re
+import zipfile
 from pathlib import Path
 import pandas as pd
 from io import BytesIO
@@ -34,6 +35,24 @@ def iter_pdf_paths(month_dir: Path):
         yield path
 
 
+def safe_extract_zip(data: bytes, target_dir: Path) -> None:
+    """
+    Safely extract a ZIP file while preventing path traversal.
+    """
+    if not data:
+        raise ValueError("Uploaded ZIP was empty.")
+
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as z:
+            for member in z.infolist():
+                destination = (target_dir / member.filename).resolve()
+                if target_dir.resolve() not in destination.parents and destination != target_dir.resolve():
+                    raise ValueError(f"Unsafe ZIP entry rejected: {member.filename}")
+            z.extractall(target_dir)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Uploaded file is not a valid ZIP archive.") from exc
+
+
 def clean_rep_name_from_filename(file_name: str) -> str:
     name = Path(file_name).stem.lower()
 
@@ -48,6 +67,86 @@ def clean_rep_name_from_filename(file_name: str) -> str:
 
     name = name.replace("_", " ").replace("-", " ").strip()
     return name.title() if name else Path(file_name).stem
+
+_MONTH_NAME_TOKENS = {
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept",
+    "oct", "nov", "dec",
+}
+
+GENERIC_FILE_STEMS = {
+    "statement", "statements", "brokerage", "monthly",
+    "doc", "document", "file", "copy", "scan", "review",
+}
+
+
+def _looks_like_bare_month_label(folder_name: str) -> bool:
+    """
+    True for folder names that are just a month label (e.g. "May",
+    "June 2026") and carry no rep/account identity -- e.g. a ZIP made by
+    compressing a folder named after the month, with every statement
+    dumped directly inside it.
+    """
+    normalized = re.sub(r"[_-]", " ", str(folder_name or "")).strip().lower()
+    tokens = normalized.split()
+    if not tokens or len(tokens) > 2:
+        return False
+    if tokens[0] not in _MONTH_NAME_TOKENS:
+        return False
+    if len(tokens) == 2 and not re.fullmatch(r"20\d{2}", tokens[1]):
+        return False
+    return True
+
+
+def resolve_rep_name_for_pdf(pdf_path: Path, month_dir: Path) -> str:
+    """
+    Builds a human-readable rep/account identity for a statement PDF.
+
+    Real-world exports vary a lot: some nest one PDF per rep/account
+    folder, some (e.g. ShareFile's "Rep/Broker/AccountNumber/statement.pdf"
+    structure) nest several levels deep with the filename itself already
+    self-sufficient (e.g. "20260630 David Rosen Individual TOD 6352.PDF"),
+    and some dump many files into one shared, non-identifying wrapper
+    folder (e.g. a ZIP compressed from a folder literally named "May").
+
+    Strategy: prefer the filename (stripped of any leading date) when it's
+    already descriptive; otherwise combine it with the top-level folder
+    directly under `month_dir` -- which is reliably the rep's own folder
+    in ShareFile's structure -- unless that top folder is just a bare
+    month label, which carries no identity.
+
+    Deliberately depends only on this file's own relative path, never on
+    how many other files happen to share a folder, so the same file
+    resolves to the same name whether it lands in the "current" or "prior"
+    bucket -- otherwise month-over-month comparisons silently stop
+    matching up.
+    """
+    try:
+        relative_parts = list(pdf_path.relative_to(month_dir).parts)
+    except ValueError:
+        relative_parts = [pdf_path.name]
+
+    filename_stem = re.sub(r"^\d{4}[-_]?\d{2}[-_]?\d{2}[\s_-]*", "", pdf_path.stem)
+    filename_identity = clean_rep_name_from_filename(filename_stem)
+
+    if len(relative_parts) <= 1:
+        return filename_identity
+
+    top_folder = relative_parts[0]
+    if _looks_like_bare_month_label(top_folder):
+        return filename_identity
+
+    top_identity = clean_rep_name_from_filename(top_folder)
+
+    if top_identity.strip().lower() in filename_identity.strip().lower():
+        return filename_identity
+
+    if not filename_identity or filename_identity.strip().lower() in GENERIC_FILE_STEMS:
+        return top_identity
+
+    return f"{top_identity} {filename_identity}".strip()
+
 
 def move_leading_account_number_from_name(name: str, account_number: str):
     """
@@ -257,7 +356,7 @@ def dataframe_to_excel_bytes(df: pd.DataFrame):
             line_count = max(str(cell.value or "").count("\n") + 1 for cell in row)
             worksheet.row_dimensions[row[0].row].height = max(42, min(34 * line_count, 150))
 
-        if worksheet.max_row >= 1 and worksheet.max_column >= 1:
+        if worksheet.max_row >= 2 and worksheet.max_column >= 1:
             table_ref = (
                 f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
             )

@@ -12,3 +12,84 @@ run ./start_server.sh then past http://127.0.0.1:8001 into url
 default login:
 username is RegimentSecurities
 password is Regiment123
+
+LLM integration (Free - No API Key Required):
+
+The app supports three local/free LLM providers with automatic fallback:
+
+1. **Ollama** (Recommended)
+   - Download: https://ollama.ai
+   - Start: `ollama run mistral`
+   - Default model: mistral
+
+2. **Jan** 
+   - Download: https://jan.ai
+   - Start: Open Jan desktop app
+   - Default model: mistral
+
+3. **GPT4All**
+   - Download: https://www.nomic.ai/gpt4all
+   - Start: `gpt4all-server`
+   - Default model: mistral
+
+**Setup:**
+- Install any one of the providers above
+- Run: `pip install -r requirements.txt`
+- Start your chosen provider (or any of them - the app will auto-detect)
+- No API keys needed!
+
+**Optional:** Force a specific provider:
+```bash
+export LLM_PROVIDER=ollama  # (or 'jan' or 'gpt4all')
+```
+
+The app now exposes endpoints:
+- `/run-llm-review` - Upload ZIPs, get logic-based review + LLM summary
+- `/run-sharefile-review` - Download from ShareFile, get both analyses
+
+Permanent deployment recommendation:
+
+Use Railway or another HTTPS host instead of a local tunnel. This repo already has
+`railway.json`, so Railway can run:
+
+```bash
+uvicorn server:app --host 0.0.0.0 --port $PORT
+```
+
+Set these production environment variables:
+
+```bash
+ADMIN_USER=your-login-user
+AUTHORIZED_USERS=your-login-user
+ADMIN_PASS=your-strong-password
+SESSION_SECRET=generate-a-long-random-string
+PUBLIC_BASE_URL=https://your-railway-domain.up.railway.app
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your-openai-api-key
+DEFAULT_LLM_MODEL=gpt-4o-mini
+```
+
+Then configure the ShareFile API key/app redirect URI to exactly:
+
+```text
+https://your-railway-domain.up.railway.app/sharefile/oauth/callback
+```
+
+Use the top "Browser OAuth Login" form at:
+
+```text
+https://your-railway-domain.up.railway.app/run-sharefile-review
+```
+
+The callback URL shown in that form must match the ShareFile API app redirect URI.
+
+Example request from curl:
+
+```bash
+curl -X POST "http://127.0.0.1:8001/run-llm-review" \
+  -F "prior_zip=@prior_month.zip" \
+  -F "current_zip=@current_month.zip" \
+  -F "model=mistral" \
+  -F "max_tokens=512" \
+  -F "temperature=0.2"
+```

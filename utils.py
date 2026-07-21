@@ -4,10 +4,17 @@ from pathlib import Path
 import pandas as pd
 from io import BytesIO
 
-RESTRICTED_LIST_PATH = Path("restricted_list_prior_month.csv")
+# Anchored to this file, not the working directory. These were relative
+# paths, so starting the server from anywhere but the repo root made
+# load_restricted_list() fall through to an empty list -- silently, which
+# meant the restricted-security, insider-trading and IPO screens ran against
+# nothing and every statement came back clean.
+_DATA_DIR = Path(__file__).resolve().parent
+
+RESTRICTED_LIST_PATH = _DATA_DIR / "restricted_list_prior_month.csv"
 IPO_LIST_PATHS = [
-    Path("IPO_Calendar_Tracking_Sheet.csv"),
-    Path("IPO Calendar Tracking Sheet 6.8.csv"),
+    _DATA_DIR / "IPO_Calendar_Tracking_Sheet.csv",
+    _DATA_DIR / "IPO Calendar Tracking Sheet 6.8.csv",
 ]
 
 
@@ -81,6 +88,24 @@ GENERIC_FILE_STEMS = {
 }
 
 
+_DATE_DIGITS = r"\d{4}[-_]?\d{2}[-_]?\d{2}"
+
+# Statement filenames lead with either a single date ("20260630 Bill Mitchell
+# JTWROS 7485.pdf") or a period range ("20260401-20260630 Manuj Sharma
+# Retirement 7850.pdf"). Stripping only the first date left the second one at
+# the front of the name, where it was then mistaken for an account number.
+LEADING_DATE_PREFIX = rf"^{_DATE_DIGITS}(?:\s*[-–]\s*{_DATE_DIGITS})?[\s_-]*"
+
+
+def looks_like_date_digits(digits: str) -> bool:
+    """True for an 8-digit run that is really a YYYYMMDD date."""
+    digits = str(digits or "")
+    if len(digits) != 8 or not digits.isdigit():
+        return False
+    year, month, day = int(digits[:4]), int(digits[4:6]), int(digits[6:8])
+    return 1990 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31
+
+
 def _looks_like_bare_month_label(folder_name: str) -> bool:
     """
     True for folder names that are just a month label (e.g. "May",
@@ -127,7 +152,7 @@ def resolve_rep_name_for_pdf(pdf_path: Path, month_dir: Path) -> str:
     except ValueError:
         relative_parts = [pdf_path.name]
 
-    filename_stem = re.sub(r"^\d{4}[-_]?\d{2}[-_]?\d{2}[\s_-]*", "", pdf_path.stem)
+    filename_stem = re.sub(LEADING_DATE_PREFIX, "", pdf_path.stem)
     filename_identity = clean_rep_name_from_filename(filename_stem)
 
     if len(relative_parts) <= 1:
@@ -162,6 +187,12 @@ def move_leading_account_number_from_name(name: str, account_number: str):
         return clean_name, clean_account
 
     leading_account, remaining_name = match.groups()
+
+    if looks_like_date_digits(leading_account):
+        # A statement date, not an account id. Drop it from the name rather
+        # than filing it under Account Number, where it reads as real data
+        # and silently corrupts the month-over-month match.
+        return remaining_name.strip(), clean_account
 
     if clean_account and clean_account.lower() != "unknown":
         return clean_name, clean_account

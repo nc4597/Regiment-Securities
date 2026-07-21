@@ -1,14 +1,56 @@
 import re
 import pandas as pd
 
+def term_pattern(term):
+    """
+    Match a keyword as a word, not as letters inside another word.
+
+    Plain substring matching made "ach" fire on "each" and "attached", which
+    put clean statements in front of the principal. The left boundary is
+    always required; the right side is left open so "wire" still catches
+    "wired"/"wiring" and "journal" still catches "journaled". Short acronyms
+    need both boundaries, otherwise "oba" matches inside "global".
+    """
+    escaped = re.escape(term)
+    if len(term) <= 3:
+        return rf"\b{escaped}\b"
+    return rf"\b{escaped}"
+
+def find_terms(text, terms):
+    """Return the terms that genuinely appear, in list order."""
+    text = text or ""
+    return [
+        term for term in terms
+        if re.search(term_pattern(term), text, flags=re.IGNORECASE)
+    ]
+
 def contains_any(text, terms):
-    return any(term in text for term in terms)
+    return bool(find_terms(text, terms))
+
+def describe_matches(text, terms, limit=3):
+    """
+    Say what tripped the flag and show the statement text around it once, so
+    the principal can triage from the report instead of reopening the PDF.
+
+    Matched terms usually sit in the same sentence, so one excerpt covers
+    them all -- quoting each term separately just repeated the same line.
+    """
+    if not terms:
+        return ""
+
+    named = ", ".join(f'"{term}"' for term in terms[:limit])
+    remaining = len(terms) - limit
+    if remaining > 0:
+        named += f" (+{remaining} more)"
+
+    excerpt = evidence_excerpt(text, terms[0], context_chars=60)
+    return f"{named} - {excerpt}" if excerpt else named
 
 def evidence_excerpt(text, term, context_chars=90):
     if not text or not term:
         return ""
 
-    match = re.search(re.escape(term), text, flags=re.IGNORECASE)
+    match = re.search(term_pattern(term), text, flags=re.IGNORECASE)
     if not match:
         return ""
 
@@ -117,7 +159,9 @@ def flag_conflicts_of_interest(account_text, restricted_df):
 
 def flag_money_movement(account_text):
     flags = []
-    text = (account_text or "").lower()
+    # Matching is case-insensitive now, so keep the original casing -- the
+    # evidence excerpts go in front of a human.
+    text = account_text or ""
 
     transfer_terms = [
         "security transfer",
@@ -162,26 +206,18 @@ def flag_money_movement(account_text):
         "check issued",
     ]
 
-    if contains_any(text, transfer_terms):
-        flags.append({
-            "flag": "Transfers of Money or Securities Review",
-            "severity": "Medium",
-            "reason": "Potential transfer, wire, ACH, journal, external-account, third-party, or customer-account activity detected.",
-        })
-
-    if contains_any(text, receipt_terms):
-        flags.append({
-            "flag": "Cash Receipts Review",
-            "severity": "Medium",
-            "reason": "Potential cash receipt from external, third-party, customer, wire, ACH, or transfer-in activity detected.",
-        })
-
-    if contains_any(text, disbursement_terms):
-        flags.append({
-            "flag": "Cash Disbursements Review",
-            "severity": "Medium",
-            "reason": "Potential cash disbursement to external, third-party, customer, wire, ACH, check, or transfer-out activity detected.",
-        })
+    for flag_name, terms in (
+        ("Transfers of Money or Securities Review", transfer_terms),
+        ("Cash Receipts Review", receipt_terms),
+        ("Cash Disbursements Review", disbursement_terms),
+    ):
+        matched = find_terms(text, terms)
+        if matched:
+            flags.append({
+                "flag": flag_name,
+                "severity": "Medium",
+                "reason": describe_matches(text, matched),
+            })
 
     return flags
 
@@ -208,7 +244,6 @@ def matched_stock_references(account_text, securities_df):
 
 def flag_restricted_transactions(account_text, restricted_df=None):
     text = account_text or ""
-    lower_text = text.lower()
     terms = [
         "restricted transaction",
         "restricted security",
@@ -221,7 +256,7 @@ def flag_restricted_transactions(account_text, restricted_df=None):
         "control stock",
         "penny stock",
     ]
-    matched_terms = [term for term in terms if term in lower_text]
+    matched_terms = find_terms(text, terms)
 
     if not matched_terms:
         return []
@@ -230,7 +265,7 @@ def flag_restricted_transactions(account_text, restricted_df=None):
     if not stock_references:
         return []
 
-    reason = "; ".join(stock_references)
+    reason = f"{'; '.join(stock_references)} ({describe_matches(text, matched_terms, limit=2)})"
 
     return [{
         "flag": "Restricted Security Review",
@@ -243,7 +278,7 @@ def flag_restricted_transactions(account_text, restricted_df=None):
     }]
 
 def flag_conflicts_keywords(account_text):
-    text = (account_text or "").lower()
+    text = account_text or ""
     terms = [
         "conflict of interest",
         "outside business activity",
@@ -256,12 +291,13 @@ def flag_conflicts_keywords(account_text):
         "personal interest",
         "related party",
     ]
-    if not contains_any(text, terms):
+    matched = find_terms(text, terms)
+    if not matched:
         return []
     return [{
         "flag": "Conflicts of Interest Review",
         "severity": "High",
-        "reason": "Potential conflict-of-interest indicator detected, such as OBA, selling away, referral fee, compensation arrangement, personal interest, or related-party language.",
+        "reason": describe_matches(text, matched),
     }]
 
 def flag_current_month_categories(account_text, restricted_df=None):

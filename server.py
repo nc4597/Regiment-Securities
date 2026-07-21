@@ -49,6 +49,12 @@ from utils import (
 from pdf_utils import split_pdf_into_accounts
 from flags import review_account, combine_flags_by_violation
 from metrics import extract_month_metrics, flag_month_over_month_changes
+from dispositions import (
+    build_statement_dispositions,
+    disposition_counts,
+    screening_inputs_summary,
+    select_qa_sample,
+)
 
 
 app = FastAPI(title="RSLLC Brokerage Reviewer")
@@ -743,6 +749,90 @@ def add_skipped_files_sheet(excel_bytes: bytes, skipped_files: List[str]) -> byt
     return output.getvalue()
 
 
+def add_dispositions_sheet(excel_bytes: bytes, disposition_df: pd.DataFrame, counts: dict) -> bytes:
+    """
+    The WSP screening artifact: every statement in the population with exactly
+    one disposition, counts first so the principal can see the population
+    reconciles at a glance.
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import Alignment, Font
+
+    workbook = load_workbook(io.BytesIO(excel_bytes))
+    if "Dispositions" in workbook.sheetnames:
+        del workbook["Dispositions"]
+
+    worksheet = workbook.create_sheet("Dispositions")
+    worksheet["A1"] = "Statement Dispositions"
+    worksheet["A1"].font = Font(bold=True, size=16)
+
+    row_index = 3
+    for key, value in counts.items():
+        worksheet.cell(row=row_index, column=1, value=str(key)).font = Font(bold=True)
+        worksheet.cell(row=row_index, column=2, value=value)
+        row_index += 1
+
+    row_index += 1
+    header_row = row_index
+    for column_index, column_name in enumerate(disposition_df.columns, start=1):
+        worksheet.cell(row=header_row, column=column_index, value=column_name).font = Font(bold=True)
+
+    for offset, (_, row) in enumerate(disposition_df.iterrows(), start=1):
+        for column_index, column_name in enumerate(disposition_df.columns, start=1):
+            cell = worksheet.cell(row=header_row + offset, column=column_index, value=row[column_name])
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    for column_letter, width in zip("ABCDEFG", [26, 44, 22, 8, 28, 34, 60]):
+        worksheet.column_dimensions[column_letter].width = width
+    worksheet.freeze_panes = worksheet.cell(row=header_row + 1, column=1).coordinate
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def add_qa_sample_sheet(excel_bytes: bytes, sample_df: pd.DataFrame, metadata: dict) -> bytes:
+    """
+    The monthly testing sample the Designated Principal reviews directly,
+    with the draw parameters recorded so the selection can be re-derived.
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import Alignment, Font
+
+    workbook = load_workbook(io.BytesIO(excel_bytes))
+    if "QA Sample" in workbook.sheetnames:
+        del workbook["QA Sample"]
+
+    worksheet = workbook.create_sheet("QA Sample")
+    worksheet["A1"] = "Monthly Testing Sample (statements screened with no exception)"
+    worksheet["A1"].font = Font(bold=True, size=16)
+
+    row_index = 3
+    for key, value in metadata.items():
+        worksheet.cell(row=row_index, column=1, value=str(key)).font = Font(bold=True)
+        worksheet.cell(row=row_index, column=2, value=str(value))
+        row_index += 1
+
+    row_index += 1
+    header_row = row_index
+    columns = list(sample_df.columns) + ["Principal Reviewed (initials/date)", "Principal Notes"]
+    for column_index, column_name in enumerate(columns, start=1):
+        worksheet.cell(row=header_row, column=column_index, value=column_name).font = Font(bold=True)
+
+    for offset, (_, row) in enumerate(sample_df.iterrows(), start=1):
+        for column_index, column_name in enumerate(sample_df.columns, start=1):
+            cell = worksheet.cell(row=header_row + offset, column=column_index, value=row[column_name])
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    for column_letter, width in zip("ABCDEFGHI", [26, 44, 22, 8, 28, 34, 60, 30, 40]):
+        worksheet.column_dimensions[column_letter].width = width
+    worksheet.freeze_panes = worksheet.cell(row=header_row + 1, column=1).coordinate
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def parse_sharefile_root_items(raw: str) -> List[str]:
     """
     The root-folder field accepts either one ShareFile folder URL/item ID
@@ -911,6 +1001,20 @@ def build_sharefile_review_excel_bytes(
             current_metrics_df,
         )
 
+        if progress_callback:
+            progress_callback("Assigning statement dispositions and drawing the QA sample.")
+        disposition_df = build_statement_dispositions(
+            current_path,
+            current_results_df=current_results_df,
+            comparison_flags_df=comparison_flags_df,
+            current_metrics_df=current_metrics_df,
+            undated_pdfs=unknown_month_pdfs,
+            undated_root=root_path,
+        )
+        statement_counts = disposition_counts(disposition_df)
+        statement_counts.update(screening_inputs_summary(restricted_df, ipo_df))
+        qa_sample_df, qa_sample_metadata = select_qa_sample(disposition_df)
+
         if summary_df.empty:
             summary_df = pd.DataFrame(
                 [{
@@ -978,6 +1082,8 @@ def build_sharefile_review_excel_bytes(
         if progress_callback:
             progress_callback("Writing Excel workbook.")
         excel_bytes = add_llm_analysis_sheet(excel_bytes, llm_analysis)
+        excel_bytes = add_dispositions_sheet(excel_bytes, disposition_df, statement_counts)
+        excel_bytes = add_qa_sample_sheet(excel_bytes, qa_sample_df, qa_sample_metadata)
         excel_bytes = add_diagnostics_sheet(
             excel_bytes,
             {
@@ -1000,6 +1106,13 @@ def build_sharefile_review_excel_bytes(
                 "Downloaded PDFs": len(downloaded_pdfs),
                 "Downloaded files": len(downloaded_paths),
                 "Detected month distribution": detected_month_distribution or "none",
+                "Statements dated before the review window": list_pdfs_outside_month_window(
+                    root_path,
+                    (
+                        target_prior_month[0],
+                        target_prior_month[1],
+                    ),
+                ),
                 "Detected current month": current_month_label,
                 "Current-month PDFs": len(current_pdfs),
                 "Detected prior month": prior_month_label or "none available",
@@ -1012,6 +1125,12 @@ def build_sharefile_review_excel_bytes(
                 "Rule flag rows": len(current_results_df),
                 "Comparison flag rows": len(comparison_flags_df),
                 "Summary rows": len(summary_df),
+                **{
+                    f"Statements: {key}": value
+                    for key, value in statement_counts.items()
+                },
+                "QA sample size": qa_sample_metadata["Sample size"],
+                "QA sample seed": qa_sample_metadata["Random seed"],
             },
         )
 
@@ -1525,6 +1644,12 @@ def month_name_to_number(month_name: str):
     return None
 
 
+# A date inside the statement older than the filename by more than this is
+# treated as boilerplate rather than the statement period. Set well clear of
+# the normal case, where a statement is filed a month or two after its period.
+STALE_IN_TEXT_DATE_MONTHS = 24
+
+
 def detect_statement_month(pdf_path: Path):
     try:
         doc = fitz.open(pdf_path)
@@ -1533,16 +1658,21 @@ def detect_statement_month(pdf_path: Path):
     except Exception:
         top_text = ""
 
-    month_key = detect_statement_month_from_text(top_text)
-    if month_key:
-        return month_key
+    text_month = detect_statement_month_from_text(top_text)
+    path_month = detect_statement_month_from_text(" ".join(pdf_path.parts))
 
-    path_text = " ".join(pdf_path.parts)
-    month_key = detect_statement_month_from_text(path_text)
-    if month_key:
-        return month_key
+    if text_month and path_month:
+        # Where the first page carries no statement-period wording, the
+        # detector falls back to any date it can see -- which on a cover or
+        # disclosure page is often a form revision date, an "effective"
+        # date, or an account opening date, years out. Statements are named
+        # for their period, so a text date that far behind the filename is
+        # not the period and the filename wins.
+        if month_sort_key(path_month) - month_sort_key(text_month) > STALE_IN_TEXT_DATE_MONTHS:
+            return path_month
+        return text_month
 
-    return None
+    return text_month or path_month
 
 
 def build_month_name_filter(
@@ -1631,6 +1761,32 @@ def organize_sharefile_root_by_latest_months(
         current_fallback_used,
         prior_fallback_used,
     )
+
+
+def list_pdfs_outside_month_window(root_path: Path, oldest_month, limit: int = 25):
+    """
+    Name the statements that landed on a month well outside the review
+    window. A count alone ("January 2014: 3") says something went wrong but
+    not where, and those files are silently excluded from every review.
+    """
+    oldest_index = month_sort_key(oldest_month)
+    outliers = []
+    for pdf_path in iter_pdf_paths(root_path):
+        month_key = detect_statement_month(pdf_path)
+        if month_key and month_sort_key(month_key) < oldest_index:
+            try:
+                display = str(pdf_path.relative_to(root_path))
+            except ValueError:
+                display = pdf_path.name
+            outliers.append(f"{display} -> {month_label(month_key)}")
+
+    if not outliers:
+        return "none"
+
+    outliers.sort()
+    if len(outliers) > limit:
+        return "; ".join(outliers[:limit]) + f"; (+{len(outliers) - limit} more)"
+    return "; ".join(outliers)
 
 
 def summarize_pdf_month_distribution(root_path: Path):
@@ -2529,7 +2685,21 @@ async def run_review(
                     ],
                 )
 
+            # 4. WSP statement dispositions and the monthly testing sample
+            disposition_df = build_statement_dispositions(
+                current_path,
+                current_results_df=current_results_df,
+                comparison_flags_df=comparison_flags_df,
+                current_metrics_df=current_metrics_df,
+            )
+            qa_sample_df, qa_sample_metadata = select_qa_sample(disposition_df)
+
+            statement_counts = disposition_counts(disposition_df)
+            statement_counts.update(screening_inputs_summary(restricted_df, ipo_df))
+
             excel_bytes = dataframe_to_excel_bytes(summary_df)
+            excel_bytes = add_dispositions_sheet(excel_bytes, disposition_df, statement_counts)
+            excel_bytes = add_qa_sample_sheet(excel_bytes, qa_sample_df, qa_sample_metadata)
 
         return StreamingResponse(
             io.BytesIO(excel_bytes),
